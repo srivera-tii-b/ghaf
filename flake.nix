@@ -25,6 +25,14 @@
     #nixpkgs.url = "github:tiiuae/nixpkgs/nixos-unstable-occulante";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
+    # BRING-UP ONLY. Used for nothing but the encrypted demo's
+    # llama-cpp-prebuilt (packages/own-pkgs-overlay.nix): a nixpkgs revision
+    # whose aarch64-linux llama-cpp cache.nixos.org has, so the image takes it
+    # as a substitute. It is the revision ghaf locked before nixpkgs moved to
+    # one whose llama-cpp and nodejs are not in the cache, which an x86_64
+    # builder then compiles under aarch64 emulation for hours.
+    nixpkgs-llama-prebuilt.url = "github:NixOS/nixpkgs/801bef6abd86b91e51083066b83fb354a11fc640";
+
     # A framework for testing ghaf configurations
     ci-test-automation = {
       url = "github:tiiuae/ci-test-automation";

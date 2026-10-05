@@ -51,6 +51,9 @@
           netvm.extraModules = [ guestConfig ];
           adminvm.extraModules = [ guestConfig ];
           guivm.extraModules = [ guestConfig ];
+          # Inert unless ghaf.virtualization.microvm.clientvm is enabled; when
+          # it is, the client must be a protected crosvm guest like its peers.
+          clientvm.extraModules = [ guestConfig ];
         };
         appvms = {
           chromium.extraModules = [ guestConfig ];

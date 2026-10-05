@@ -103,8 +103,8 @@ let
 
         # Arm 3 of the benchmark: vsock cannot address guest-to-guest, so net-vm
         # reaches admin-vm's vsock bench server only through a relay here. Off
-        # with the bench; the CID is read from the central allocation, which a
-        # third guest (client-vm) has shifted, admin-vm is no longer 3.
+        # with the bench; the CID is read from the central allocation, which
+        # client-vm shifts (admin-vm is 5 with it, 4 without).
         systemd.services.bench-vsock-relay = lib.mkIf cfg.vsockBenchRelay.enable {
           description = "vsock relay for the guest-to-guest benchmark arm";
           wantedBy = [ "multi-user.target" ];
@@ -361,7 +361,8 @@ let
         # BRING-UP ONLY. The third guest of the encrypted demo: a second
         # xchan client, distrusting net-vm and admin-vm alike. Minimal by
         # design (modules/microvm/sysvms/clientvm-base.nix). Joining the
-        # central allocation shifts CIDs: client-vm 3, admin-vm 4, net-vm 5.
+        # central allocation shifts CIDs: client-vm 3, gui-vm 4, admin-vm 5,
+        # net-vm 6.
         virtualization.microvm.clientvm.enable = true;
       };
       vmConfig = {
@@ -403,8 +404,8 @@ let
                 users.users.root.openssh.authorizedKeys.keys = [ bringupTestKeyPub ];
                 # netvm-base assigns no CID, which is why `microvm -s net-vm`
                 # reported no VSOCK. Take it from the same central allocation
-                # the other sysvms use rather than a literal: a third guest
-                # moved net-vm from 4 to 5.
+                # the other sysvms use rather than a literal: client-vm
+                # moved net-vm from 5 to 6.
                 # BRING-UP ONLY. cid alone is NOT enough: microvm.vsock.ssh is a
                 # separate option, and without it no sshd listens on vsock, so
                 # `microvm -s net-vm` gets a connection reset and the test key
@@ -484,6 +485,15 @@ let
             }
           ];
         };
+        # BRING-UP ONLY. gui-vm is a protected guest with the same guest
+        # kernel, so its guest-to-guest self-test would ping and share pages
+        # with admin-vm, net-vm and client-vm for about 15 minutes after boot,
+        # through the one-slot mailboxes the demo's g2gchan step needs to
+        # itself. Keep that test off, as the demo guests do
+        # (vm-xchan-demo.nix).
+        sysvms.guivm.extraModules = [
+          { boot.kernelParams = [ "arm_pkvm_guest.g2g_runtime_test=0" ]; }
+        ];
       };
     })
 

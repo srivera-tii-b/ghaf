@@ -15,9 +15,10 @@
 #
 # It is still a "system-vm", which is what gives it a vsock CID from the
 # central allocation in modules/common/networking/hosts.nix. NOTE that joining
-# that allocation shifts the CIDs of the VMs listed after it (admin-vm moves
-# from 3 to 4, net-vm from 4 to 5 on Orin): read CIDs off the built runner or
-# config.ghaf.networking.hosts, never from memory.
+# that allocation shifts the CIDs of the VMs listed after it (on the Orin pKVM
+# target gui-vm moves from 3 to 4, admin-vm from 4 to 5, net-vm from 5 to 6):
+# read CIDs off the built runner or config.ghaf.networking.hosts, never from
+# memory.
 #
 # Takes globalConfig and hostConfig via specialArgs, like the other bases:
 #   lib.nixosSystem {

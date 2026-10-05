@@ -257,7 +257,7 @@ in
         # target enables ghaf.virtualization.microvm.clientvm.
         orin.clientvmBase = lib.nixosSystem {
           modules = [
-            inputs.microvm.nixosModules.microvm
+            inputs.self.nixosModules.microvm-nix
             inputs.self.nixosModules.clientvm-base
             {
               nixpkgs = {
