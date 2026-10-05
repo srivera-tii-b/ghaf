@@ -13,6 +13,7 @@
     flash-script = final.callPackage ./pkgs-by-name/flash-script/package.nix { };
     fleet-desktop = final.callPackage ./pkgs-by-name/fleet-desktop/package.nix { };
     fleet-orbit = final.callPackage ./pkgs-by-name/fleet-orbit/package.nix { };
+    g2gchan = final.callPackage ./pkgs-by-name/g2gchan/package.nix { };
     gala = final.callPackage ./pkgs-by-name/gala/package.nix { };
     ghaf-build-helper = final.callPackage ./pkgs-by-name/ghaf-build-helper/package.nix { };
     ghaf-installer = final.callPackage ./pkgs-by-name/ghaf-installer/package.nix { };
@@ -27,6 +28,7 @@
     make-checks = final.callPackage ./pkgs-by-name/make-checks/package.nix { };
     memsocket = final.callPackage ./pkgs-by-name/memsocket/package.nix { };
     pci-binder = final.callPackage ./pkgs-by-name/pci-binder/package.nix { };
+    pkvm-g2g-test = final.callPackage ./pkgs-by-name/pkvm-g2g-test/package.nix { };
     rtl8126 = final.callPackage ./pkgs-by-name/rtl8126/package.nix { };
     update-docs-depends = final.callPackage ./pkgs-by-name/update-docs-depends/package.nix { };
     user-provision = final.callPackage ./pkgs-by-name/user-provision/package.nix { };

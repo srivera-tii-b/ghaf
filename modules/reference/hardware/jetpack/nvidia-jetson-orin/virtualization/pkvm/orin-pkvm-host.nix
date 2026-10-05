@@ -14,6 +14,13 @@ let
     argsOverride.defconfig = "debug_defconfig";
 
     structuredExtraConfig = with lib.kernel; {
+      # Guest identity, messages and page sharing between protected VMs
+      # (vendor hypervisor calls 12-20), implemented at EL2 and changing its
+      # state, and the guest-to-guest path in EL2 teardown of every VM. Three
+      # EL2 self-checks run at boot; if one fails the calls are not advertised.
+      # The guests need the same option (orin-pkvm-guest.nix). See the comment
+      # on src in packages/linux-pkvm-jetson/default.nix.
+      PKVM_GUEST_TO_GUEST = yes;
       VIRTIO_FS = module;
       TCG_TIS = module;
       RTW89 = module;
