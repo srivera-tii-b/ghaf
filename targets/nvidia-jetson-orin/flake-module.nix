@@ -44,6 +44,43 @@ let
     { ghaf.reference.org.tii.enable = true; }
   ];
 
+  # Host side of the xchan link. The two crosvm processes meet on a unix
+  # socket in the host namespace; the guests never see it.
+  xchanHostModule = {
+    # crosvm binds/connects this path at device creation, before either guest
+    # runs, so it has to exist on the host first.
+    # microvm:kvm, not root: microvm@.service sets PrivateUsers=true, so each
+    # crosvm is root inside its own user namespace but an unmapped UID against
+    # host-owned files, CAP_DAC_OVERRIDE does not cross that boundary. Its
+    # effective host identity is microvm:kvm, which is what owns
+    # /var/lib/microvms. A root-owned 0750 directory here is unreachable from
+    # both ends: the listener fails bind() and the connector then fails
+    # connect(), both with EACCES (observed on first boot).
+    systemd.tmpfiles.rules = [ "d /run/xchan 0770 microvm kvm -" ];
+
+    # The connector's crosvm connects when its device is created and, if the
+    # hub has not bound the socket yet, retries with bounded backoff for a
+    # few seconds before failing that VM. Ordering makes the common case
+    # right; "After" only means admin-vm's unit started, not that its crosvm
+    # reached bind(), so the retry budget covers the rest.
+    systemd.services."microvm@net-vm" = {
+      # After: the hub should have bound the socket before the connector
+      # tries it. This avoids a pointless crashloop at boot; it is not about
+      # correctness.
+      after = [ "microvm@admin-vm.service" ];
+      wants = [ "microvm@admin-vm.service" ];
+
+      # PartOf, not merely Wants: propagate the hub's stop/restart to the
+      # connector, which comes back through its own Restart=always with a
+      # fresh channel. This dates from a crosvm whose connector treated peer
+      # loss as terminal, which left the guest blocked in wait_channel
+      # indefinitely with no error. The current connector also reconnects by
+      # itself once its old channel is settled (the guest closed the fd and
+      # the peer detached).
+      partOf = [ "microvm@admin-vm.service" ];
+    };
+  };
+
   # Exercise the complete manager/CDI integration in an existing CI-built
   # image without making example workloads part of Ghaf. The manager-owned
   # mock plugin is sufficient for build and boot validation; downstream
@@ -224,12 +261,36 @@ let
       profile = "orin";
       hardwareModule = self.nixosModules.hardware-nvidia-jetson-orin-agx64;
       variant = "debug";
-      extraModules = commonModules;
+      extraModules = commonModules ++ [ xchanHostModule ];
       extraConfig = {
         reference.profiles.mvp-orinuser-trial.enable = true;
 
         host.kernel.hardening.hypervisor.enable = true;
         guest.hardening.protected.enable = true;
+      };
+      vmConfig = {
+        # xchan link for the first guest-to-guest transport test.
+        # admin-vm listens, net-vm connects. Exactly one listener per link.
+        sysvms.netvm = {
+          extraModules = [
+            {
+              ghaf.virtualization.microvm.xchan = {
+                enable = true;
+                role = "connector";
+              };
+            }
+          ];
+        };
+        sysvms.adminvm = {
+          extraModules = [
+            {
+              ghaf.virtualization.microvm.xchan = {
+                enable = true;
+                role = "listener";
+              };
+            }
+          ];
+        };
       };
     })
 
