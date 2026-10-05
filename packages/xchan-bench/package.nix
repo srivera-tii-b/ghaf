@@ -4,11 +4,13 @@
 # Inference benchmark harness. Measures request/response latency and
 # throughput over interchangeable transports (unix socket, vsock, xchan,
 # g2gchan), so the cost of the transport can be separated from the cost of
-# the model.
+# the model. Also carries the encrypted guest-to-guest LLM demo
+# (xchan-demo-server/-client).
 {
   stdenv,
   lib,
   libxchan,
+  libsodium,
   g2gchan,
 }:
 stdenv.mkDerivation {
@@ -18,6 +20,7 @@ stdenv.mkDerivation {
 
   buildInputs = [
     libxchan
+    libsodium
     g2gchan
   ];
 
@@ -58,21 +61,58 @@ stdenv.mkDerivation {
       -o bench-client-g2g client.c transport_g2g.c -L${g2gchan}/lib -lg2gchan
     $CC $CF -pthread -I${g2gchan}/include \
       -o bench-mock-server-g2g mock_server.c transport_g2g.c -L${g2gchan}/lib -lg2gchan
+
+    # Encrypted guest-to-guest LLM demo: mutually authenticated, end-to-end
+    # encrypted request/response between guests, so the host relaying the
+    # xchan traffic only ever sees ciphertext. Protocol: demo_crypto.c.
+    # -e /dev/xchan0 (xchan) or -e g2g (g2gchan, guest-to-guest shared memory).
+    $CC $CF -pthread -I${libxchan}/include -I${g2gchan}/include \
+      -o xchan-demo-server demo_server.c demo_crypto.c demo_session.c llama_http.c \
+      -L${libxchan}/lib -lxchan -L${g2gchan}/lib -lg2gchan -lsodium
+    $CC $CF -pthread -I${libxchan}/include -I${g2gchan}/include \
+      -o xchan-demo-client demo_client.c demo_crypto.c demo_session.c \
+      -L${libxchan}/lib -lxchan -L${g2gchan}/lib -lg2gchan -lsodium
     runHook postBuild
   '';
 
-  # mkDerivation skips this when cross-compiling (the image build); a native
-  # build (x86_64 or aarch64) runs it.
+  # Tests for the encrypted guest-to-guest demo (demo_crypto.c,
+  # demo_session.c): handshake and records over socketpairs with a
+  # tampering relay as the host, the request service with a fake model and
+  # a fake llama-server on loopback, and seed->pk for the committed test
+  # keys. mkDerivation skips this when cross-compiling (the image build); a
+  # native build (x86_64 or aarch64) runs it.
   doCheck = true;
   checkPhase = ''
     runHook preCheck
     CF="-std=c99 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -O2 -g"
+    $CC $CF -pthread -o test-demo test_demo.c demo_crypto.c demo_session.c llama_http.c -lsodium
+    ./test-demo ${./test-keys}
 
     # The bench client skips a channel closed before its first reply (an xchan
     # channel left by a server that stopped), at most 3 times, and never once a
     # request has gone through. Sock backend, a server that closes on purpose.
     $CC $CF -o test-client test_client.c transport_sock.c
     ./test-client
+
+    # The two binaries parse their arguments and keys, then fail cleanly
+    # (no xchan device here) with the lines a deployment reads: the client's
+    # DEMO lines on stdout, which the orchestrator relays to the host journal,
+    # and the server's DEMO-SERVER lines on stderr, which its unit sends to
+    # the guest's journal only.
+    K=${./test-keys}
+    if ./xchan-demo-server -e /nonexistent/xchan0 --key $K/admin-vm.seed --clients $K \
+        --llama http://127.0.0.1:8080 2> server.log; then
+      echo "xchan-demo-server succeeded without a device"; exit 1
+    fi
+    cat server.log
+    grep -q '^DEMO-SERVER start fp=df0172a6 clients=.*client-vm:094e377f' server.log
+    grep -q '^DEMO-SERVER fatal: open /nonexistent/xchan0' server.log
+    if ./xchan-demo-client -e /nonexistent/xchan0 --name net-vm --key $K/net-vm.seed \
+        --server-pk $K/admin-vm.pk -n 2 -p hello > client.log; then
+      echo "xchan-demo-client succeeded without a device"; exit 1
+    fi
+    cat client.log
+    grep -q '^DEMO client=net-vm ok=0 failed=2$' client.log
     runHook postCheck
   '';
 
@@ -89,6 +129,8 @@ stdenv.mkDerivation {
     install -m755 bench-client-xchan  $out/bin/bench-client-xchan
     install -m755 bench-client-g2g    $out/bin/bench-client-g2g
     install -m755 bench-mock-server-g2g $out/bin/bench-mock-server-g2g
+    install -m755 xchan-demo-server   $out/bin/xchan-demo-server
+    install -m755 xchan-demo-client   $out/bin/xchan-demo-client
     runHook postInstall
   '';
 

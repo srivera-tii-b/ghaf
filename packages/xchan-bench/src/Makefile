@@ -27,7 +27,7 @@ LDFLAGS ?=
 
 BUILD_DIR := build
 
-.PHONY: all sock vsock xchan check clean
+.PHONY: all sock vsock xchan demo check clean
 
 all: sock vsock
 
@@ -52,16 +52,44 @@ $(BUILD_DIR)/mock_server_vsock: mock_server.c transport_vsock.c proto.h transpor
 # ---- llama_shim: throwaway shim that replaces mock_server with a real
 # llama-server backend (see llama_shim.c header). Standalone, no
 # dependency on transport.h/transport_sock.c. Its HTTP client half is
-# llama_http.c. ----
+# llama_http.c, shared with xchan-demo-server. ----
 $(BUILD_DIR)/llama_shim: llama_shim.c llama_http.c llama_http.h proto.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ llama_shim.c llama_http.c $(LDFLAGS)
+
+# ---- encrypted guest-to-guest demo (demo_*.c) ----
+# Needs libsodium. `make check` builds and runs the tests, which need only
+# libsodium (socketpairs stand in for xchan). `make demo` no longer builds
+# the two binaries: they also use g2gchan (g2gchan.h, libg2gchan), which
+# this target neither includes nor links; package.nix builds them. With
+# nix, use the package's checkPhase for the tests too: a system compiler
+# linked against nix-store libsodium fails at runtime on a glibc mismatch.
+SODIUM_CFLAGS ?= $(shell pkg-config --cflags libsodium 2>/dev/null)
+SODIUM_LIBS   ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
+DEMO_SRC := demo_crypto.c demo_session.c
+DEMO_HDR := demo_crypto.h demo_session.h proto.h
+
+$(BUILD_DIR)/test_demo: test_demo.c $(DEMO_SRC) llama_http.c $(DEMO_HDR) llama_http.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -pthread $(SODIUM_CFLAGS) -o $@ test_demo.c $(DEMO_SRC) llama_http.c $(SODIUM_LIBS) $(LDFLAGS)
 
 # The bench client against a server that closes channels (sock backend).
 $(BUILD_DIR)/test_client: test_client.c client.c transport_sock.c proto.h transport.h stats.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ test_client.c transport_sock.c $(LDFLAGS)
 
-check: $(BUILD_DIR)/test_client
+check: $(BUILD_DIR)/test_demo $(BUILD_DIR)/test_client
+	$(BUILD_DIR)/test_demo ../test-keys
 	$(BUILD_DIR)/test_client
+
+demo: $(BUILD_DIR)
+	@if [ -z "$(LIBXCHAN_DIR)" ] || [ -z "$(LIBXCHAN_LIB)" ]; then \
+		echo "error: demo build needs LIBXCHAN_DIR and LIBXCHAN_LIB set (see xchan)"; \
+		exit 1; \
+	fi
+	$(CC) $(CFLAGS) -pthread $(SODIUM_CFLAGS) -I$(LIBXCHAN_DIR) \
+		-o $(BUILD_DIR)/xchan-demo-server demo_server.c $(DEMO_SRC) llama_http.c \
+		$(LIBXCHAN_LIB) $(SODIUM_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -pthread $(SODIUM_CFLAGS) -I$(LIBXCHAN_DIR) \
+		-o $(BUILD_DIR)/xchan-demo-client demo_client.c $(DEMO_SRC) \
+		$(LIBXCHAN_LIB) $(SODIUM_LIBS) $(LDFLAGS)
 
 # ---- xchan backend (target only: requires libxchan + /dev/xchan*) ----
 # LIBXCHAN_DIR: directory containing libxchan.h and xchan_uapi.h

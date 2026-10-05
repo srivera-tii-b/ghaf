@@ -145,6 +145,16 @@ path = [
   "packages/pkgs-by-name/pkvm-g2g-test/src/linux/pkvm_g2g.h",
 ]
 
+# The encrypted demo's committed test keys: each file is exactly one line of
+# hex, which the demo's key reader requires, so it cannot carry a header.
+[[annotations]]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "2022-2026 TII (SSRC) and the Ghaf contributors"
+path = [
+  "packages/xchan-bench/test-keys/*.pk",
+  "packages/xchan-bench/test-keys/*.seed",
+]
+
 [[annotations]]
 SPDX-License-Identifier = "LicenseRef-NvidiaProprietary"
 SPDX-FileCopyrightText = "Copyright (c) 2023-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved."
