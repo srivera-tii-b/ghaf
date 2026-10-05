@@ -26,6 +26,9 @@ in
     # options and defaults to off, so importing it changes nothing until a
     # target sets ghaf.reference.services.llama-bench.enable.
     ./llama-bench/llama-bench.nix
+    # BRING-UP ONLY: host-side orchestrator of the encrypted guest-to-guest LLM
+    # demo. Same posture as llama-bench: off until a target enables it.
+    ./xchan-demo/xchan-demo.nix
     ./chromecast/chromecast.nix
     ./chromecast/chromecast-config.nix
     ./nw-packet-forwarder/nw-packet-forwarder.nix

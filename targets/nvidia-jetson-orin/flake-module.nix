@@ -45,11 +45,12 @@ let
   ];
 
   # BRING-UP ONLY. One fixed, unprivileged test SSH key for hardware
-  # bring-up: the private half is copied into root's ~/.ssh on the host, the
-  # public half is authorized for root in the guests configured below. It
-  # lands world-readable in the nix store. It must not survive into anything
-  # shipped and must never be added to a PR; remove it together with every
-  # use (authorizedKeys, the tmpfiles copy).
+  # bring-up: the private half is copied into the host (root's ~/.ssh, and the
+  # demo orchestrator's runtime dir), the public half is authorized for root on
+  # every demo guest. It lands world-readable in the nix store. It must not
+  # survive into anything shipped and must never be added to a PR; remove it
+  # together with every use (authorizedKeys, the tmpfiles copy, the demo's
+  # sshKey).
   bringupTestKey = builtins.path {
     path = /home/census/srivera/census/testkey/id_ed25519;
     name = "xchan-bringup-test-key";
@@ -115,6 +116,16 @@ let
           };
         };
 
+        # BRING-UP ONLY. The encrypted guest-to-guest LLM demo, sequenced from
+        # here: modules/reference/services/xchan-demo/xchan-demo.nix. Runs once
+        # per boot from a timer; `systemctl start xchan-demo` to run it again,
+        # `journalctl -u xchan-demo` to read it. The host only starts/stops
+        # guests and runs the client inside them; it holds no demo key.
+        ghaf.reference.services.xchan-demo = {
+          enable = true;
+          sshKey = bringupTestKey;
+        };
+
         # crosvm binds/connects this path at device creation, before either guest
         # runs, so it has to exist on the host first.
         # microvm:kvm, not root: microvm@.service sets PrivateUsers=true, so each
@@ -151,6 +162,10 @@ let
         # indefinitely with no error. The current connector also reconnects by
         # itself once its old channel is settled (the guest closed the fd and
         # the peer detached).
+        #
+        # PartOf is one-way: stopping a connector (demo step 3) leaves the hub
+        # and the other connector alone, and Wants on an already-active hub is a
+        # no-op, so starting a connector again (step 5) does not restart it.
         systemd.services."microvm@net-vm" = connectorOrdering;
         systemd.services."microvm@client-vm" = connectorOrdering;
       };
@@ -372,12 +387,12 @@ let
                   benchTools = true;
                   benchService = false;
                   # BRING-UP ONLY. Gives `ssh root@vsock/<cid>` from the host, so
-                  # measurements and poking around stop costing a reflash. Pairs
-                  # with the test key in authorizedKeys below.
+                  # measurements and poking around stop costing a reflash, and
+                  # is how the demo orchestrator drives the client. Pairs with
+                  # the test key in authorizedKeys below.
                   vsockLogin = true;
                   # BRING-UP ONLY. Demo client: its own identity + admin-vm's
-                  # public key. Run from the host over vsock ssh
-                  # (xchan-demo-run), not at boot.
+                  # public key. Run by the host orchestrator, not at boot.
                   demo = {
                     enable = true;
                     name = "net-vm";
@@ -453,7 +468,7 @@ let
               ghaf.virtualization.microvm.xchan = {
                 enable = true;
                 role = "connector";
-                # BRING-UP ONLY. The host's way in, as on net-vm.
+                # BRING-UP ONLY. The orchestrator's way in, as on net-vm.
                 vsockLogin = true;
                 demo = {
                   enable = true;
