@@ -134,6 +134,17 @@ SPDX-FileCopyrightText = "Copyright (c) NVIDIA CORPORATION"
 precedence = "override"
 path = "modules/reference/hardware/jetpack/nvidia-jetson-orin/virtualization/passthrough/gpu-vm/nv-dt-bindings/**"
 
+# The kernel's /dev/pkvm-g2g uapi header, vendored byte-identical to the one in
+# the kernel linux-pkvm-jetson builds. Like the kernel's own files it carries only
+# a licence line, so its copyright line is given here.
+[[annotations]]
+SPDX-License-Identifier = "GPL-2.0-only WITH Linux-syscall-note"
+SPDX-FileCopyrightText = "2022-2026 TII (SSRC) and the Ghaf contributors"
+path = [
+  "packages/pkgs-by-name/g2gchan/src/linux/pkvm_g2g.h",
+  "packages/pkgs-by-name/pkvm-g2g-test/src/linux/pkvm_g2g.h",
+]
+
 [[annotations]]
 SPDX-License-Identifier = "LicenseRef-NvidiaProprietary"
 SPDX-FileCopyrightText = "Copyright (c) 2023-2024, NVIDIA CORPORATION & AFFILIATES. All rights reserved."
