@@ -11,6 +11,10 @@
 # - Net VM (netvmBase exported for composition)
 # - Admin VM (adminvmBase exported for composition)
 #
+# Available but off by default:
+# - Client VM (clientvmBase): a minimal xchan client guest, BRING-UP ONLY,
+#   enabled by the agx64-pvm demo target
+#
 # Disabled VMs (architectural reasons):
 # - GUI VM: GPU passthrough not supported, desktop runs natively on host (COSMIC)
 # - Audio VM: Audio hardware directly accessible from host
@@ -112,6 +116,16 @@ in
       readOnly = true;
       description = ''
         Orin Disp VM base configuration.
+        Profiles can extend this with extendModules if customization needed.
+      '';
+    };
+
+    # Client VM base (BRING-UP ONLY: second xchan client of the encrypted demo)
+    clientvmBase = lib.mkOption {
+      type = lib.types.unspecified;
+      readOnly = true;
+      description = ''
+        Orin Client VM base configuration, a minimal xchan client guest.
         Profiles can extend this with extendModules if customization needed.
       '';
     };
@@ -235,6 +249,30 @@ in
             hostConfig = lib.ghaf.vm.mkHostConfig {
               inherit config;
               vmName = "disp-vm";
+            };
+          };
+        };
+
+        # Export Client VM base. Evaluated lazily, so it costs nothing unless a
+        # target enables ghaf.virtualization.microvm.clientvm.
+        orin.clientvmBase = lib.nixosSystem {
+          modules = [
+            inputs.microvm.nixosModules.microvm
+            inputs.self.nixosModules.clientvm-base
+            {
+              nixpkgs = {
+                hostPlatform.system = "aarch64-linux";
+                inherit (config.nixpkgs) overlays;
+                inherit (config.nixpkgs) config;
+              };
+            }
+          ];
+          specialArgs = lib.ghaf.vm.mkSpecialArgs {
+            inherit lib inputs;
+            globalConfig = hostGlobalConfig;
+            hostConfig = lib.ghaf.vm.mkHostConfig {
+              inherit config;
+              vmName = "client-vm";
             };
           };
         };
@@ -417,6 +455,17 @@ in
               modules = lib.ghaf.vm.applyVmConfig {
                 inherit config;
                 vmName = "dispvm";
+              };
+            };
+          };
+
+          # Client VM: off unless a target turns it on (the agx64-pvm demo
+          # does). Only the evaluatedConfig wiring lives here, as for gpuvm.
+          clientvm = {
+            evaluatedConfig = config.ghaf.profiles.orin.clientvmBase.extendModules {
+              modules = lib.ghaf.vm.applyVmConfig {
+                inherit config;
+                vmName = "clientvm";
               };
             };
           };

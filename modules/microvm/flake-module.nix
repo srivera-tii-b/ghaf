@@ -22,6 +22,7 @@
       ./sysvms/gpuvm.nix
       ./sysvms/dispvm.nix
       ./sysvms/adminvm.nix
+      ./sysvms/clientvm.nix
       ./appvm.nix
       ./sysvms/guivm.nix
       ./sysvms/audiovm.nix
@@ -117,6 +118,13 @@
     #   lib.nixosSystem { modules = [ inputs.self.nixosModules.dispvm-base ]; ... }
     #     .extendModules { modules = [ ... ]; }
     dispvm-base = ./sysvms/dispvm-base.nix;
+
+    # Client VM base module (BRING-UP ONLY: the second xchan client guest of
+    # the encrypted demo). No NIC, no network, no storage, see the file.
+    # Use with extendModules pattern:
+    #   lib.nixosSystem { modules = [ inputs.self.nixosModules.clientvm-base ]; ... }
+    #     .extendModules { modules = [ ... ]; }
+    clientvm-base = ./sysvms/clientvm-base.nix;
 
     # App VM base module for layered composition
     # Unlike singleton VMs, App VMs are instantiated multiple times using mkAppVm.

@@ -71,6 +71,11 @@ let
     let
       cfg = config.ghaf.xchan-bringup;
       inherit (config.ghaf.networking) hosts;
+      connectorOrdering = {
+        after = [ "microvm@admin-vm.service" ];
+        wants = [ "microvm@admin-vm.service" ];
+        partOf = [ "microvm@admin-vm.service" ];
+      };
     in
     {
       options.ghaf.xchan-bringup = {
@@ -97,8 +102,8 @@ let
 
         # Arm 3 of the benchmark: vsock cannot address guest-to-guest, so net-vm
         # reaches admin-vm's vsock bench server only through a relay here. Off
-        # with the bench; admin-vm's CID is read from the central allocation
-        # rather than written as a literal.
+        # with the bench; the CID is read from the central allocation, which a
+        # third guest (client-vm) has shifted, admin-vm is no longer 3.
         systemd.services.bench-vsock-relay = lib.mkIf cfg.vsockBenchRelay.enable {
           description = "vsock relay for the guest-to-guest benchmark arm";
           wantedBy = [ "multi-user.target" ];
@@ -130,27 +135,24 @@ let
           "C /root/.ssh/id_ed25519 0600 root root - ${bringupTestKey}"
         ];
 
+        # Both connectors (net-vm, client-vm) are ordered against the hub the
+        # same way.
+        #
         # The connector's crosvm connects when its device is created and, if the
         # hub has not bound the socket yet, retries with bounded backoff for a
         # few seconds before failing that VM. Ordering makes the common case
         # right; "After" only means admin-vm's unit started, not that its crosvm
         # reached bind(), so the retry budget covers the rest.
-        systemd.services."microvm@net-vm" = {
-          # After: the hub should have bound the socket before the connector
-          # tries it. This avoids a pointless crashloop at boot; it is not about
-          # correctness.
-          after = [ "microvm@admin-vm.service" ];
-          wants = [ "microvm@admin-vm.service" ];
-
-          # PartOf, not merely Wants: propagate the hub's stop/restart to the
-          # connector, which comes back through its own Restart=always with a
-          # fresh channel. This dates from a crosvm whose connector treated peer
-          # loss as terminal, which left the guest blocked in wait_channel
-          # indefinitely with no error. The current connector also reconnects by
-          # itself once its old channel is settled (the guest closed the fd and
-          # the peer detached).
-          partOf = [ "microvm@admin-vm.service" ];
-        };
+        #
+        # PartOf, not merely Wants: propagate the hub's stop/restart to the
+        # connector, which comes back through its own Restart=always with a
+        # fresh channel. This dates from a crosvm whose connector treated peer
+        # loss as terminal, which left the guest blocked in wait_channel
+        # indefinitely with no error. The current connector also reconnects by
+        # itself once its old channel is settled (the guest closed the fd and
+        # the peer detached).
+        systemd.services."microvm@net-vm" = connectorOrdering;
+        systemd.services."microvm@client-vm" = connectorOrdering;
       };
     };
 
@@ -340,14 +342,21 @@ let
 
         host.kernel.hardening.hypervisor.enable = true;
         guest.hardening.protected.enable = true;
+
+        # BRING-UP ONLY. The third guest of the encrypted demo: a second
+        # xchan client, distrusting net-vm and admin-vm alike. Minimal by
+        # design (modules/microvm/sysvms/clientvm-base.nix). Joining the
+        # central allocation shifts CIDs: client-vm 3, admin-vm 4, net-vm 5.
+        virtualization.microvm.clientvm.enable = true;
       };
       vmConfig = {
-        # xchan link for the first guest-to-guest transport test.
-        # admin-vm listens, net-vm connects. Exactly one listener per link.
+        # xchan: admin-vm listens; net-vm and client-vm both connect to the
+        # same hub socket, each crosvm holding one channel. Exactly one
+        # listener per link.
         #
         # The encrypted guest-to-guest LLM demo runs on top:
-        # the model in admin-vm, net-vm asking it over xchan with every
-        # message end-to-end encrypted between guests. benchService is
+        # the model in admin-vm, the two clients asking it over xchan with
+        # every message end-to-end encrypted between guests. benchService is
         # OFF in every guest because WAIT_CHANNEL hands each channel to one
         # consumer, the bench server would take admin-vm's channels from the
         # demo server (vm-xchan-demo.nix asserts this). benchTools stays on,
@@ -379,7 +388,8 @@ let
                 users.users.root.openssh.authorizedKeys.keys = [ bringupTestKeyPub ];
                 # netvm-base assigns no CID, which is why `microvm -s net-vm`
                 # reported no VSOCK. Take it from the same central allocation
-                # the other sysvms use rather than a literal.
+                # the other sysvms use rather than a literal: a third guest
+                # moved net-vm from 4 to 5.
                 # BRING-UP ONLY. cid alone is NOT enough: microvm.vsock.ssh is a
                 # separate option, and without it no sshd listens on vsock, so
                 # `microvm -s net-vm` gets a connection reset and the test key
@@ -395,11 +405,11 @@ let
         };
         sysvms.adminvm = {
           # The model guest. 4096 MB already covers the model with room to
-          # spare: llama-server gets 8192 tokens of context per client slot
-          # (see vm-xchan-demo.nix), and two slots with two concurrent
-          # worst-case requests peaked at 0.86 GB RSS (weights included) when
-          # measured with the same llama.cpp build and model. 4 vCPUs: 3
-          # decode threads plus one for the demo server, virtio and sshd.
+          # spare: llama-server at ctx 16384 / 2 slots (8192 tokens each, see
+          # vm-xchan-demo.nix) with two concurrent worst-case requests peaked
+          # at 0.86 GB RSS (weights included) when measured with the same
+          # llama.cpp build and model. 4 vCPUs: 3 decode threads plus one for
+          # the demo server, virtio and sshd.
           vcpu = 4;
           extraModules = [
             {
@@ -410,19 +420,49 @@ let
                 benchService = false;
                 # BRING-UP ONLY. See the note on net-vm.
                 vsockLogin = true;
-                # BRING-UP ONLY. Demo server: llama-server (Qwen2.5-0.5B, one
-                # slot per client, 127.0.0.1 only) + xchan-demo-server, which
-                # accepts only the clients listed here by public key.
+                # BRING-UP ONLY. Demo server: llama-server (Qwen2.5-0.5B, 2
+                # slots, 127.0.0.1 only) + xchan-demo-server, which accepts
+                # only the clients listed here by public key.
                 demo = {
                   enable = true;
                   name = "admin-vm";
                   keyDir = demoTestKeys;
-                  clients = [ "net-vm" ];
+                  clients = [
+                    "net-vm"
+                    "client-vm"
+                  ];
                 };
               };
               # BRING-UP ONLY. See the note on net-vm: the cid comes from
               # networking.thisVm, but the vsock sshd has to be asked for
               # separately or the test key cannot be reached.
+              microvm.vsock.ssh.enable = true;
+              # BRING-UP ONLY, see bringupTestKey.
+              users.users.root.openssh.authorizedKeys.keys = [ bringupTestKeyPub ];
+            }
+          ];
+        };
+        # BRING-UP ONLY. A second demo client and nothing else: no NIC, no
+        # network, no storage. 1 vCPU / 1 GiB is the system-VM default memory
+        # and runs one client process at a time.
+        sysvms.clientvm = {
+          mem = 1024;
+          vcpu = 1;
+          extraModules = [
+            {
+              ghaf.virtualization.microvm.xchan = {
+                enable = true;
+                role = "connector";
+                # BRING-UP ONLY. The host's way in, as on net-vm.
+                vsockLogin = true;
+                demo = {
+                  enable = true;
+                  name = "client-vm";
+                  keyDir = demoTestKeys;
+                };
+              };
+              # The cid comes from networking.thisVm (clientvm-base.nix); the
+              # vsock sshd has to be asked for separately.
               microvm.vsock.ssh.enable = true;
               # BRING-UP ONLY, see bringupTestKey.
               users.users.root.openssh.authorizedKeys.keys = [ bringupTestKeyPub ];
