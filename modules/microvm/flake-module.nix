@@ -43,6 +43,7 @@
       ./common/store-shared-virtiofs.nix
       ./common/storagevm.nix
       ./common/vm-crosvm.nix
+      ./common/vm-xchan.nix
       ./common/vm-networking.nix
       ./common/vm-protected.nix
       ./common/vm-qemu.nix
