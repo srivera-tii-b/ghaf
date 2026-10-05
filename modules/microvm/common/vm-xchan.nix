@@ -155,10 +155,10 @@ in
       }
     ];
 
-    # --vendor-device is parsed by crosvm itself, so socket and role are host
+    # --vendor-devices is parsed by crosvm itself, so socket and role are host
     # command-line state, not anything the guest can influence.
     microvm.crosvm.extraArgs = lib.mkAfter [
-      "--vendor-device"
+      "--vendor-devices"
       "xchan,socket=${cfg.socket},role=${cfg.role},max_channels=${toString cfg.maxChannels},window=${toString cfg.windowSize}"
     ];
 

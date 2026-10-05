@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2022-2026 TII (SSRC) and the Ghaf contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# tiiuae fork of crosvm to bring pKVM patches
+# tiiuae fork of crosvm to bring pKVM patches, with the xchan vendor device
 #
 {
   crosvm,
@@ -10,15 +10,20 @@
   dbus,
 }:
 let
-  version = "0-develop-2026-09-16";
+  version = "0-develop-xchan";
+
+  # tiiuae/crosvm develop at 86d84c3f9 plus the xchan vendor device
+  # (ghaf.virtualization.microvm.xchan). It is on a fork of tiiuae/crosvm
+  # until it is merged there; this source then moves back to tiiuae at the
+  # merged revision.
   src = fetchFromGitHub {
-    owner = "tiiuae";
+    owner = "srivera-tii-b";
     repo = "crosvm";
-    rev = "faae3b634a42ffcc5e893474f914f60a4a67ac0c"; # develop - Sep 16 2026
+    rev = "452249cbe394540f50ecd17738f215149e536974"; # feat/xchan, on develop 86d84c3f9
     fetchSubmodules = true;
-    hash = "sha256-mjovUn/8Fbkry1PPiobQ65f58Y1pVTu2fS19MsfwfYA=";
+    hash = "sha256-I9IElcVx4m9hh32WcA9KbUUd9NxoyqKC4XeYD3JeYKA=";
   };
-  cargoHash = "sha256-Ald9ftlj7vK2sK3he9U2mhOVL5/uYtaNpvp7JiBkqBk=";
+  cargoHash = "sha256-vNZ0IhvmYp8aEe7LDqBZocol7vF82MTePtHAH0vGUHc=";
 in
 crosvm.overrideAttrs (prev: {
   inherit version src cargoHash;
@@ -40,5 +45,8 @@ crosvm.overrideAttrs (prev: {
     "pci-hotplug"
     "vtpm"
     "bpmp"
+    # The vendor devices, xchan among them, and the --vendor-devices option
+    # that adds one to a VM are compiled in only with this feature.
+    "vendor-devices"
   ];
 })

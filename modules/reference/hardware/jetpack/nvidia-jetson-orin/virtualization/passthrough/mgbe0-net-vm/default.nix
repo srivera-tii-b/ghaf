@@ -222,7 +222,9 @@ in
               mgbeOverlay = preprocessDtsi { dtsFile = ./ethernet-guest-overlay.dts; };
             in
             [
-              "--bpmp-proxy"
+              # The BPMP proxy is crosvm's tegra234 vendor device "bpmp".
+              "--vendor-devices"
+              "bpmp"
               "--device-tree-overlay"
               "${mgbeOverlay}"
               "--vfio"
