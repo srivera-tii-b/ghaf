@@ -78,6 +78,17 @@ in
     "pd_ignore_unused"
   ];
 
+  # The /dev/pkvm-g2g two-guest test, and g2gchan with g2gc-echo (byte-exact
+  # streaming between two guests), in every protected guest. Both need the
+  # two options above: without PKVM_GUEST_TO_GUEST the device is absent and
+  # the test exits 2 ("cannot open"); without the self-test option the guest
+  # has no identity, so the test exits 2 ("this VM has no identity") and
+  # g2gchan's connect fails with EPERM.
+  environment.systemPackages = [
+    pkgs.pkvm-g2g-test
+    pkgs.g2gchan
+  ];
+
   hardware.enableAllHardware = false;
   boot.initrd.includeDefaultModules = false;
   boot.initrd.availableKernelModules = [
