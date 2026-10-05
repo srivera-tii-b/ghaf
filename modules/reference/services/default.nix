@@ -22,6 +22,10 @@ in
     ./proxy-server/3proxy-config.nix
     ./smcroute/smcroute.nix
     ./ollama/ollama.nix
+    # BRING-UP ONLY: llama.cpp inference benchmark backend. Declares its own
+    # options and defaults to off, so importing it changes nothing until a
+    # target sets ghaf.reference.services.llama-bench.enable.
+    ./llama-bench/llama-bench.nix
     ./chromecast/chromecast.nix
     ./chromecast/chromecast-config.nix
     ./nw-packet-forwarder/nw-packet-forwarder.nix

@@ -158,6 +158,25 @@ in
       '';
     };
 
+    llamaVsockPort = mkOption {
+      type = types.nullOr types.ints.positive;
+      default = null;
+      description = ''
+        BRING-UP ONLY. When set, the connector gains a fourth arm that drives a
+        REAL model running on the host, over guest-to-host vsock:
+        `bench-client-vsock -e 2:<port>`. The host side is llama-server behind
+        bench-llama-shim, see `ghaf.reference.services.llama-bench.vsockPort`,
+        which this must match.
+
+        This is the only arm whose numbers are real inference rather than the
+        mock server's configured delays. Its numbers are NOT comparable with
+        the guest-to-guest arms: one hop instead of two, no relay, and a model
+        instead of a sleep loop.
+
+        Requires `benchTools` and `benchService`.
+      '';
+    };
+
     maxChannels = mkOption {
       type = types.ints.positive;
       default = 16;
@@ -193,6 +212,13 @@ in
         message = ''
           ghaf.virtualization.microvm.xchan.benchService needs benchTools, which
           is what puts the bench binaries in the VM.
+        '';
+      }
+      {
+        assertion = cfg.llamaVsockPort != null -> cfg.benchService;
+        message = ''
+          ghaf.virtualization.microvm.xchan.llamaVsockPort only does anything
+          with benchService on, it adds an arm to the driver that unit runs.
         '';
       }
       {
@@ -367,67 +393,86 @@ in
         StandardOutput = "journal+console";
         StandardError = "journal+console";
         ExecStart = pkgs.writeShellScript "xchan-bench-driver" ''
-          set -u
-          B=${pkgs.xchan-bench}/bin
+                    set -u
+                    B=${pkgs.xchan-bench}/bin
 
-          # Arm 1: unix socket, both ends inside this guest. Crosses no VM
-          # boundary, so it measures the harness's own overhead, the floor
-          # that makes the other two numbers interpretable.
-          run_control() {
-            rm -f /tmp/bench-control.sock
-            "$B/bench-mock-server" -e /tmp/bench-control.sock \
-              --ttft-ms 50 --itl-ms 20 --tokens 32 &
-            local srv=$!
-            sleep 1
-            echo "BENCH arm=control(unix,in-guest)"
-            "$B/bench-client" -e /tmp/bench-control.sock -n 20 -t 32 || true
-            kill "$srv" 2>/dev/null || true
-            wait "$srv" 2>/dev/null || true
-          }
+                    # Arm 1: unix socket, both ends inside this guest. Crosses no VM
+                    # boundary, so it measures the harness's own overhead, the floor
+                    # that makes the other two numbers interpretable.
+                    run_control() {
+                      rm -f /tmp/bench-control.sock
+                      "$B/bench-mock-server" -e /tmp/bench-control.sock \
+                        --ttft-ms 50 --itl-ms 20 --tokens 32 &
+                      local srv=$!
+                      sleep 1
+                      echo "BENCH arm=control(unix,in-guest)"
+                      "$B/bench-client" -e /tmp/bench-control.sock -n 20 -t 32 || true
+                      kill "$srv" 2>/dev/null || true
+                      wait "$srv" 2>/dev/null || true
+                    }
 
-          # Arm 2: xchan, guest to guest. The real measurement. ONE xchan
-          # client per pass, carrying a payload ABOVE the inline cap.
-          #
-          # Why not two arms (small then large): with an earlier driver whose
-          # recv did not return when the peer detached, the single-threaded
-          # server never got back to accept() after the first client exited,
-          # and the second client blocked forever in wait_channel, seen on
-          # hardware. The driver's recv now returns ECONNRESET once the peer
-          # has detached; one client per pass stays the shape proven there.
-          #
-          # The prompt is 4080 bytes, so wire length (header + prompt) lands just
-          # past XCHAN_INLINE_MAX (4096) and forces a two-fragment XCHAN_F_MORE
-          # chain. Before the inline conversion this same message took the
-          # shared-window path, which under pKVM kills the listener's vCPU with
-          # -EREMOTEIO, so ok=N failed=0 here is unambiguous proof that inline
-          # fragmentation works end to end.
-          #
-          # Small-payload xchan numbers were measured on an earlier image (TTFT
-          # within a millisecond of the vsock arm, the same throughput), so
-          # nothing is lost by not measuring them again.
-          run_xchan() {
-            echo "BENCH arm=xchan(guest-to-guest, payload over inline cap)"
-            P=$(${pkgs.gawk}/bin/awk 'BEGIN{for(i=0;i<4080;i++)printf "x"}')
-            echo "BENCH   prompt_bytes=''${#P}"
-            "$B/bench-client-xchan" -e /dev/xchan0 -n 10 -t 8 -p "$P" || true
-          }
+                    # Arm 2: xchan, guest to guest. The real measurement. ONE xchan
+                    # client per pass, carrying a payload ABOVE the inline cap.
+                    #
+                    # Why not two arms (small then large): with an earlier driver whose
+                    # recv did not return when the peer detached, the single-threaded
+                    # server never got back to accept() after the first client exited,
+                    # and the second client blocked forever in wait_channel, seen on
+                    # hardware. The driver's recv now returns ECONNRESET once the peer
+                    # has detached; one client per pass stays the shape proven there.
+                    #
+                    # The prompt is 4080 bytes, so wire length (header + prompt) lands just
+                    # past XCHAN_INLINE_MAX (4096) and forces a two-fragment XCHAN_F_MORE
+                    # chain. Before the inline conversion this same message took the
+                    # shared-window path, which under pKVM kills the listener's vCPU with
+                    # -EREMOTEIO, so ok=N failed=0 here is unambiguous proof that inline
+                    # fragmentation works end to end.
+                    #
+                    # Small-payload xchan numbers were measured on an earlier image (TTFT
+                    # within a millisecond of the vsock arm, the same throughput), so
+                    # nothing is lost by not measuring them again.
+                    run_xchan() {
+                      echo "BENCH arm=xchan(guest-to-guest, payload over inline cap)"
+                      P=$(${pkgs.gawk}/bin/awk 'BEGIN{for(i=0;i<4080;i++)printf "x"}')
+                      echo "BENCH   prompt_bytes=''${#P}"
+                      "$B/bench-client-xchan" -e /dev/xchan0 -n 10 -t 8 -p "$P" || true
+                    }
 
-          # Arm 3: vsock via the host relay. vsock cannot address guest-to-guest,
-          # so this is two hops through bench-vsock-relay on the host; that relay
-          # cost is part of what vsock costs in this topology.
-          run_vsock() {
-            echo "BENCH arm=vsock(via host relay)"
-            "$B/bench-client-vsock" -e 2:9000 -n 20 -t 32 || true
-          }
-          echo "BENCH driver starting; repeating every ${toString cfg.repeatSeconds}s"
-          while :; do
-            echo "BENCH ==== pass start ===="
-            run_control
-            run_xchan
-            run_vsock
-            echo "BENCH ==== pass end ===="
-            sleep ${toString cfg.repeatSeconds}
-          done
+                    # Arm 3: vsock via the host relay. vsock cannot address guest-to-guest,
+                    # so this is two hops through bench-vsock-relay on the host; that relay
+                    # cost is part of what vsock costs in this topology.
+                    run_vsock() {
+                      echo "BENCH arm=vsock(via host relay)"
+                      "$B/bench-client-vsock" -e 2:9000 -n 20 -t 32 || true
+                    }
+          ${lib.optionalString (cfg.llamaVsockPort != null) ''
+            # Arm 4: the REAL model. llama-server on the host, reached through
+            # bench-llama-shim on AF_VSOCK port ${toString cfg.llamaVsockPort}.
+            # Guest-to-host is vsock's native direction, so there is no relay in
+            # this path and it is one hop, not two, do not line these numbers up
+            # against the guest-to-guest arms above.
+            #
+            # -v prints per-request TTFT and tok/s. This is the only arm with
+            # real inference, so the per-request spread matters as much as the
+            # median: request 1 carries prompt-cache cold cost and will be the
+            # outlier.
+            run_llama() {
+              echo "BENCH arm=llama(real model on host, vsock 2:${toString cfg.llamaVsockPort})"
+              "$B/bench-client-vsock" -e 2:${toString cfg.llamaVsockPort} -n 10 -t 32 \
+                -v -p "Explain in one sentence why satellites stay in orbit." || true
+            }
+          ''}
+                    echo "BENCH driver starting; repeating every ${toString cfg.repeatSeconds}s"
+                    while :; do
+                      echo "BENCH ==== pass start ===="
+                      run_control
+                      run_xchan
+                      run_vsock
+          ${
+            lib.optionalString (cfg.llamaVsockPort != null) "            run_llama\n"
+          }            echo "BENCH ==== pass end ===="
+                      sleep ${toString cfg.repeatSeconds}
+                    done
         '';
       };
     };

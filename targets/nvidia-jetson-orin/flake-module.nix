@@ -56,6 +56,12 @@ let
   };
   bringupTestKeyPub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJxw+TJWc5PLTaHP9Q4c9/3YmRrBHhgUrNZk1rI4a1gN xchan-bringup-test-key";
 
+  # BRING-UP ONLY, committed test identities for the encrypted demo, one
+  # Ed25519 key per guest (packages/xchan-bench/test-keys/README.md). A path
+  # literal on purpose: vm-xchan-demo.nix copies each file into the store on
+  # its own, so a guest's closure holds only its own seed.
+  demoTestKeys = ../../packages/xchan-bench/test-keys;
+
   # Host side of the xchan link. The crosvm processes meet on a unix socket
   # in the host namespace; the guests never see it.
   # A module function rather than a bare attrset: it needs `pkgs` and
@@ -71,13 +77,23 @@ let
         vsockBenchRelay.enable = lib.mkEnableOption ''
           bench-vsock-relay on the host, the host half of the bench's vsock
           arm (net-vm -> host -> admin-vm). Only meaningful with
-          ghaf.virtualization.microvm.xchan.benchService on in both guests'';
+          ghaf.virtualization.microvm.xchan.benchService on in both guests,
+          which the encrypted demo excludes'';
       };
 
       config = {
-        # BRING-UP ONLY. The benchmark binaries on the host, for manual runs;
-        # nothing here starts them unless vsockBenchRelay is enabled.
+        # BRING-UP ONLY. The benchmark binaries stay on the host for manual
+        # runs; nothing here starts them any more (see vsockBenchRelay).
         environment.systemPackages = [ pkgs.xchan-bench ];
+
+        # The model is no longer on the host. It used to run here (llama-server
+        # behind the vsock shim, measured from net-vm over guest-to-host vsock);
+        # the demo runs the same llama-bench module INSIDE admin-vm instead, on
+        # its loopback only, behind xchan-demo-server (vm-xchan-demo.nix). To
+        # bring the host-model arm back, set
+        # ghaf.reference.services.llama-bench.enable here and llamaVsockPort +
+        # benchService in net-vm, and turn the demo off, which competes for
+        # /dev/xchan0 with the bench.
 
         # Arm 3 of the benchmark: vsock cannot address guest-to-guest, so net-vm
         # reaches admin-vm's vsock bench server only through a relay here. Off
@@ -328,6 +344,14 @@ let
       vmConfig = {
         # xchan link for the first guest-to-guest transport test.
         # admin-vm listens, net-vm connects. Exactly one listener per link.
+        #
+        # The encrypted guest-to-guest LLM demo runs on top:
+        # the model in admin-vm, net-vm asking it over xchan with every
+        # message end-to-end encrypted between guests. benchService is
+        # OFF in every guest because WAIT_CHANNEL hands each channel to one
+        # consumer, the bench server would take admin-vm's channels from the
+        # demo server (vm-xchan-demo.nix asserts this). benchTools stays on,
+        # so the binaries are still there for manual runs.
         sysvms.netvm = {
           extraModules = [
             (
@@ -337,10 +361,19 @@ let
                   enable = true;
                   role = "connector";
                   benchTools = true;
+                  benchService = false;
                   # BRING-UP ONLY. Gives `ssh root@vsock/<cid>` from the host, so
                   # measurements and poking around stop costing a reflash. Pairs
                   # with the test key in authorizedKeys below.
                   vsockLogin = true;
+                  # BRING-UP ONLY. Demo client: its own identity + admin-vm's
+                  # public key. Run from the host over vsock ssh
+                  # (xchan-demo-run), not at boot.
+                  demo = {
+                    enable = true;
+                    name = "net-vm";
+                    keyDir = demoTestKeys;
+                  };
                 };
                 # BRING-UP ONLY, see bringupTestKey.
                 users.users.root.openssh.authorizedKeys.keys = [ bringupTestKeyPub ];
@@ -361,14 +394,31 @@ let
           ];
         };
         sysvms.adminvm = {
+          # The model guest. 4096 MB already covers the model with room to
+          # spare: llama-server gets 8192 tokens of context per client slot
+          # (see vm-xchan-demo.nix), and two slots with two concurrent
+          # worst-case requests peaked at 0.86 GB RSS (weights included) when
+          # measured with the same llama.cpp build and model. 4 vCPUs: 3
+          # decode threads plus one for the demo server, virtio and sshd.
+          vcpu = 4;
           extraModules = [
             {
               ghaf.virtualization.microvm.xchan = {
                 enable = true;
                 role = "listener";
                 benchTools = true;
+                benchService = false;
                 # BRING-UP ONLY. See the note on net-vm.
                 vsockLogin = true;
+                # BRING-UP ONLY. Demo server: llama-server (Qwen2.5-0.5B, one
+                # slot per client, 127.0.0.1 only) + xchan-demo-server, which
+                # accepts only the clients listed here by public key.
+                demo = {
+                  enable = true;
+                  name = "admin-vm";
+                  keyDir = demoTestKeys;
+                  clients = [ "net-vm" ];
+                };
               };
               # BRING-UP ONLY. See the note on net-vm: the cid comes from
               # networking.thisVm, but the vsock sshd has to be asked for

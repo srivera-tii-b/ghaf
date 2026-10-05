@@ -24,6 +24,19 @@
     gpu-vm-partition-manager-sdk = inputs.gpu-partition-manager.lib.mkSdk { pkgs = final; };
     hardware-scan = final.callPackage ./pkgs-by-name/hardware-scan/package.nix { };
     libxchan = final.callPackage ./pkgs-by-name/xchan/package.nix { };
+    llama-bench-model = final.callPackage ./pkgs-by-name/llama-bench-model/package.nix { };
+    # Stock nixpkgs llama.cpp for the TARGET system, deliberately NOT routed
+    # through ghaf's overlays. The overlaid/cross-compiled llama-cpp is a ~32
+    # derivation build including nodejs and openblas with nothing in any cache;
+    # this one is a 10 MiB substitute, because Hydra has already built it. It
+    # costs ~135 MB of duplicated runtime libs in the image (its own gcc-lib,
+    # gfortran-lib and openblas; glibc and openssl are already shared) and buys
+    # back an hour or more of build time plus the risk of a cross build of the
+    # server's npm web UI failing outright.
+    #
+    # Only defensible because this is BRING-UP ONLY measurement tooling. Nothing
+    # shipped should pull a package from outside the project's own package set.
+    llama-cpp-prebuilt = inputs.nixpkgs.legacyPackages.${final.stdenv.hostPlatform.system}.llama-cpp;
     logseald = inputs.logseald.lib.mkPackage { pkgs = final; };
     make-checks = final.callPackage ./pkgs-by-name/make-checks/package.nix { };
     memsocket = final.callPackage ./pkgs-by-name/memsocket/package.nix { };

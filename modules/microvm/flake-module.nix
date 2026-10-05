@@ -44,6 +44,7 @@
       ./common/storagevm.nix
       ./common/vm-crosvm.nix
       ./common/vm-xchan.nix
+      ./common/vm-xchan-demo.nix
       ./common/vm-networking.nix
       ./common/vm-protected.nix
       ./common/vm-qemu.nix
