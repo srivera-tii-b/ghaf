@@ -34,6 +34,7 @@
     user-provision = final.callPackage ./pkgs-by-name/user-provision/package.nix { };
     wait-for-unit = final.callPackage ./pkgs-by-name/wait-for-unit/package.nix { };
     windows-launcher = final.callPackage ./pkgs-by-name/windows-launcher/package.nix { };
+    xchan-bench = final.callPackage ./xchan-bench/package.nix { };
     xchan-module = final.callPackage ./pkgs-by-name/xchan/module.nix { };
   };
   # keep-sorted end

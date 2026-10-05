@@ -115,6 +115,49 @@ in
       '';
     };
 
+    benchTools = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        BRING-UP ONLY. Installs the xchan-bench harness (socket and xchan
+        clients, mock server, llama shim) into the VM. Measurement tooling,
+        not part of the transport, remove before any release build.
+      '';
+    };
+
+    vsockLogin = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        BRING-UP ONLY. Turns on sshd so the host can reach this guest with
+        `ssh root@vsock/<cid>`, and adds xchan-vsock-diag, which reports the
+        vsock and sshd state to the console at boot.
+
+        No socket unit is defined here: systemd's ssh-generator emits
+        `sshd-vsock.socket` by itself. What it needs is an sshd for that
+        socket to start; with `services.openssh.enable` off, a host-side
+        connect gets ECONNRESET although something is listening. The guest
+        also needs a vsock CID.
+      '';
+    };
+
+    benchService = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        BRING-UP ONLY. Runs the benchmark from systemd and logs results to the
+        guest console, so `journalctl -u microvm@<vm>` on the host shows them.
+
+        It was added while there was no way into the guests (vsock ssh got a
+        connection reset, so `microvm -s` could not be used). Driving the
+        benchmark from a unit still removes the dependency on guest login, and
+        reuses the pattern xchan-smoke proved on this board.
+
+        The listener runs the servers long-lived; the connector runs each client
+        in turn on a loop. Requires `benchTools`.
+      '';
+    };
+
     maxChannels = mkOption {
       type = types.ints.positive;
       default = 16;
@@ -146,6 +189,20 @@ in
   config = mkIf cfg.enable {
     assertions = [
       {
+        assertion = cfg.benchService -> cfg.benchTools;
+        message = ''
+          ghaf.virtualization.microvm.xchan.benchService needs benchTools, which
+          is what puts the bench binaries in the VM.
+        '';
+      }
+      {
+        assertion = !(cfg.benchService && cfg.smokeTest);
+        message = ''
+          benchService and smokeTest cannot both run: they compete for xchan
+          channel 0. Pick one.
+        '';
+      }
+      {
         assertion = vmm == "crosvm";
         message = ''
           ghaf.virtualization.microvm.xchan requires the crosvm hypervisor;
@@ -168,7 +225,10 @@ in
     # the TPM case where initrd has to unlock storage.
     boot.kernelModules = [ "xchan" ];
 
-    environment.systemPackages = [ pkgs.libxchan ];
+    environment.systemPackages = [
+      pkgs.libxchan
+    ]
+    ++ lib.optional cfg.benchTools pkgs.xchan-bench;
 
     # The driver logs its probe at dev_info. NixOS boots quiet, so without
     # this the single line that proves the guest bound the device never
@@ -204,6 +264,171 @@ in
         ExecStart = "${pkgs.libxchan}/bin/xchan-smoke ${cfg.role} ${toString cfg.iterations} ${toString cfg.repeatSeconds}";
         StandardOutput = "journal+console";
         StandardError = "journal+console";
+      };
+    };
+
+    # ---- benchmark, driven by systemd so it needs no guest login ----
+
+    # Listener side: the servers, long-lived. Both transports at once, they are
+    # independent, and having both up means the connector can measure either
+    # without a restart on this side.
+    systemd.services.xchan-bench-server = lib.mkIf (cfg.benchService && cfg.role == "listener") {
+      description = "xchan benchmark server (xchan transport)";
+      after = [ "systemd-modules-load.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "simple";
+        Restart = "always";
+        RestartSec = "2s";
+        # ttft/itl chosen to imitate an 8B model's timing profile, so the ratio
+        # of transport cost to inference cost is realistic without running a
+        # model: ~50 ms to first token, ~20 ms between tokens.
+        ExecStart = "${pkgs.xchan-bench}/bin/bench-mock-server-xchan -e /dev/xchan0 --ttft-ms 50 --itl-ms 20 --tokens 32";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+    };
+
+    systemd.services.xchan-bench-server-vsock = lib.mkIf (cfg.benchService && cfg.role == "listener") {
+      description = "xchan benchmark server (vsock transport)";
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "simple";
+        Restart = "always";
+        RestartSec = "2s";
+        ExecStart = "${pkgs.xchan-bench}/bin/bench-mock-server-vsock --vsock 9000 --ttft-ms 50 --itl-ms 20 --tokens 32";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+    };
+
+    # ---- vsock login: sshd for the ssh-generator's socket, plus a diagnostic ----
+
+    # NO static socket here, deliberately. An earlier revision defined
+    # `xchan-ssh-vsock.socket` (ListenStream=vsock::22, Accept=yes) plus a
+    # matching sshd template, on the theory that systemd's ssh-generator never
+    # emitted `sshd-vsock.socket` because it runs before the virtio-vsock device
+    # is probed and so cannot read a local CID.
+    #
+    # Hardware disproved that. The generator DOES emit both
+    # `sshd-vsock.socket` and `sshd-vsock@.service`, the generator's socket comes
+    # up active, and ours failed with the address already in use, dead weight
+    # that only put the guest into a degraded state. What actually made vsock
+    # login work is the one line below: with `services.openssh.enable` off there
+    # is no sshd for the generator's socket to activate, which is why a host-side
+    # connect got ECONNRESET with something apparently listening.
+
+    # sshd_config and host keys have to exist for the above to work at all.
+    services.openssh.enable = lib.mkIf cfg.vsockLogin true;
+
+    # Diagnostic, so that if vsock login still fails the next boot explains why
+    # rather than costing another flash cycle. Everything goes to the console,
+    # which the host captures as `journalctl -u microvm@<vm>`.
+    systemd.services.xchan-vsock-diag = lib.mkIf cfg.vsockLogin {
+      description = "report vsock/sshd state to the console";
+      after = [
+        "sockets.target"
+        "systemd-modules-load.service"
+      ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
+      script = ''
+        echo "VSOCKDIAG device:      $(ls -l /dev/vsock 2>&1)"
+        echo "VSOCKDIAG vsock mods:  $(grep -i vsock /proc/modules 2>/dev/null || echo '(built-in, no modules)')"
+        echo "VSOCKDIAG listeners:"
+        ${pkgs.iproute2}/bin/ss -l --vsock 2>&1 | sed 's/^/VSOCKDIAG   /' || true
+        echo "VSOCKDIAG generator units:"
+        ls -1 /run/systemd/generator/ 2>/dev/null | grep -i ssh | sed 's/^/VSOCKDIAG   /'           || echo "VSOCKDIAG   (generator emitted no ssh units)"
+        echo "VSOCKDIAG gen socket:  $(systemctl is-active sshd-vsock.socket 2>&1)"
+        echo "VSOCKDIAG sshd:        $(systemctl is-active sshd 2>&1)"
+        # NixOS writes users.users.<u>.openssh.authorizedKeys.keys to
+        # /etc/ssh/authorized_keys.d/<u>, NOT ~/.ssh/authorized_keys. An earlier
+        # revision checked the latter and reported "no authorized_keys" while
+        # login worked perfectly, a false negative that nearly sent us chasing
+        # a problem that did not exist.
+        echo "VSOCKDIAG authorized:  $(ls /etc/ssh/authorized_keys.d/ 2>/dev/null | tr '\n' ' ' || echo 'none')"
+      '';
+    };
+
+    # Connector side: run each arm in turn and print results to the console.
+    systemd.services.xchan-bench-client = lib.mkIf (cfg.benchService && cfg.role == "connector") {
+      description = "xchan benchmark client (all arms)";
+      after = [ "systemd-modules-load.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "simple";
+        Restart = "always";
+        RestartSec = "10s";
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+        ExecStart = pkgs.writeShellScript "xchan-bench-driver" ''
+          set -u
+          B=${pkgs.xchan-bench}/bin
+
+          # Arm 1: unix socket, both ends inside this guest. Crosses no VM
+          # boundary, so it measures the harness's own overhead, the floor
+          # that makes the other two numbers interpretable.
+          run_control() {
+            rm -f /tmp/bench-control.sock
+            "$B/bench-mock-server" -e /tmp/bench-control.sock \
+              --ttft-ms 50 --itl-ms 20 --tokens 32 &
+            local srv=$!
+            sleep 1
+            echo "BENCH arm=control(unix,in-guest)"
+            "$B/bench-client" -e /tmp/bench-control.sock -n 20 -t 32 || true
+            kill "$srv" 2>/dev/null || true
+            wait "$srv" 2>/dev/null || true
+          }
+
+          # Arm 2: xchan, guest to guest. The real measurement. ONE xchan
+          # client per pass, carrying a payload ABOVE the inline cap.
+          #
+          # Why not two arms (small then large): with an earlier driver whose
+          # recv did not return when the peer detached, the single-threaded
+          # server never got back to accept() after the first client exited,
+          # and the second client blocked forever in wait_channel, seen on
+          # hardware. The driver's recv now returns ECONNRESET once the peer
+          # has detached; one client per pass stays the shape proven there.
+          #
+          # The prompt is 4080 bytes, so wire length (header + prompt) lands just
+          # past XCHAN_INLINE_MAX (4096) and forces a two-fragment XCHAN_F_MORE
+          # chain. Before the inline conversion this same message took the
+          # shared-window path, which under pKVM kills the listener's vCPU with
+          # -EREMOTEIO, so ok=N failed=0 here is unambiguous proof that inline
+          # fragmentation works end to end.
+          #
+          # Small-payload xchan numbers were measured on an earlier image (TTFT
+          # within a millisecond of the vsock arm, the same throughput), so
+          # nothing is lost by not measuring them again.
+          run_xchan() {
+            echo "BENCH arm=xchan(guest-to-guest, payload over inline cap)"
+            P=$(${pkgs.gawk}/bin/awk 'BEGIN{for(i=0;i<4080;i++)printf "x"}')
+            echo "BENCH   prompt_bytes=''${#P}"
+            "$B/bench-client-xchan" -e /dev/xchan0 -n 10 -t 8 -p "$P" || true
+          }
+
+          # Arm 3: vsock via the host relay. vsock cannot address guest-to-guest,
+          # so this is two hops through bench-vsock-relay on the host; that relay
+          # cost is part of what vsock costs in this topology.
+          run_vsock() {
+            echo "BENCH arm=vsock(via host relay)"
+            "$B/bench-client-vsock" -e 2:9000 -n 20 -t 32 || true
+          }
+          echo "BENCH driver starting; repeating every ${toString cfg.repeatSeconds}s"
+          while :; do
+            echo "BENCH ==== pass start ===="
+            run_control
+            run_xchan
+            run_vsock
+            echo "BENCH ==== pass end ===="
+            sleep ${toString cfg.repeatSeconds}
+          done
+        '';
       };
     };
   };

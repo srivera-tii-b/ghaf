@@ -44,42 +44,99 @@ let
     { ghaf.reference.org.tii.enable = true; }
   ];
 
-  # Host side of the xchan link. The two crosvm processes meet on a unix
-  # socket in the host namespace; the guests never see it.
-  xchanHostModule = {
-    # crosvm binds/connects this path at device creation, before either guest
-    # runs, so it has to exist on the host first.
-    # microvm:kvm, not root: microvm@.service sets PrivateUsers=true, so each
-    # crosvm is root inside its own user namespace but an unmapped UID against
-    # host-owned files, CAP_DAC_OVERRIDE does not cross that boundary. Its
-    # effective host identity is microvm:kvm, which is what owns
-    # /var/lib/microvms. A root-owned 0750 directory here is unreachable from
-    # both ends: the listener fails bind() and the connector then fails
-    # connect(), both with EACCES (observed on first boot).
-    systemd.tmpfiles.rules = [ "d /run/xchan 0770 microvm kvm -" ];
-
-    # The connector's crosvm connects when its device is created and, if the
-    # hub has not bound the socket yet, retries with bounded backoff for a
-    # few seconds before failing that VM. Ordering makes the common case
-    # right; "After" only means admin-vm's unit started, not that its crosvm
-    # reached bind(), so the retry budget covers the rest.
-    systemd.services."microvm@net-vm" = {
-      # After: the hub should have bound the socket before the connector
-      # tries it. This avoids a pointless crashloop at boot; it is not about
-      # correctness.
-      after = [ "microvm@admin-vm.service" ];
-      wants = [ "microvm@admin-vm.service" ];
-
-      # PartOf, not merely Wants: propagate the hub's stop/restart to the
-      # connector, which comes back through its own Restart=always with a
-      # fresh channel. This dates from a crosvm whose connector treated peer
-      # loss as terminal, which left the guest blocked in wait_channel
-      # indefinitely with no error. The current connector also reconnects by
-      # itself once its old channel is settled (the guest closed the fd and
-      # the peer detached).
-      partOf = [ "microvm@admin-vm.service" ];
-    };
+  # BRING-UP ONLY. One fixed, unprivileged test SSH key for hardware
+  # bring-up: the private half is copied into root's ~/.ssh on the host, the
+  # public half is authorized for root in the guests configured below. It
+  # lands world-readable in the nix store. It must not survive into anything
+  # shipped and must never be added to a PR; remove it together with every
+  # use (authorizedKeys, the tmpfiles copy).
+  bringupTestKey = builtins.path {
+    path = /home/census/srivera/census/testkey/id_ed25519;
+    name = "xchan-bringup-test-key";
   };
+  bringupTestKeyPub = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJxw+TJWc5PLTaHP9Q4c9/3YmRrBHhgUrNZk1rI4a1gN xchan-bringup-test-key";
+
+  # Host side of the xchan link. The crosvm processes meet on a unix socket
+  # in the host namespace; the guests never see it.
+  # A module function rather than a bare attrset: it needs `pkgs` and
+  # `config`, which the outer scope here does not provide (only lib/self/inputs).
+  xchanHostModule =
+    { config, pkgs, ... }:
+    let
+      cfg = config.ghaf.xchan-bringup;
+      inherit (config.ghaf.networking) hosts;
+    in
+    {
+      options.ghaf.xchan-bringup = {
+        vsockBenchRelay.enable = lib.mkEnableOption ''
+          bench-vsock-relay on the host, the host half of the bench's vsock
+          arm (net-vm -> host -> admin-vm). Only meaningful with
+          ghaf.virtualization.microvm.xchan.benchService on in both guests'';
+      };
+
+      config = {
+        # BRING-UP ONLY. The benchmark binaries on the host, for manual runs;
+        # nothing here starts them unless vsockBenchRelay is enabled.
+        environment.systemPackages = [ pkgs.xchan-bench ];
+
+        # Arm 3 of the benchmark: vsock cannot address guest-to-guest, so net-vm
+        # reaches admin-vm's vsock bench server only through a relay here. Off
+        # with the bench; admin-vm's CID is read from the central allocation
+        # rather than written as a literal.
+        systemd.services.bench-vsock-relay = lib.mkIf cfg.vsockBenchRelay.enable {
+          description = "vsock relay for the guest-to-guest benchmark arm";
+          wantedBy = [ "multi-user.target" ];
+          serviceConfig = {
+            Type = "simple";
+            Restart = "always";
+            RestartSec = "5s";
+            ExecStart = "${pkgs.xchan-bench}/bin/bench-vsock-relay 9000 ${toString hosts.admin-vm.cid} 9000";
+          };
+        };
+
+        # crosvm binds/connects this path at device creation, before either guest
+        # runs, so it has to exist on the host first.
+        # microvm:kvm, not root: microvm@.service sets PrivateUsers=true, so each
+        # crosvm is root inside its own user namespace but an unmapped UID against
+        # host-owned files, CAP_DAC_OVERRIDE does not cross that boundary. Its
+        # effective host identity is microvm:kvm, which is what owns
+        # /var/lib/microvms. A root-owned 0750 directory here is unreachable from
+        # both ends: the listener fails bind() and the connector then fails
+        # connect(), both with EACCES (observed on first boot).
+        systemd.tmpfiles.rules = [
+          "d /run/xchan 0770 microvm kvm -"
+          # BRING-UP ONLY. Copies (C, not symlinks) the test private key into
+          # root's ~/.ssh with 0600 so `ssh root@vsock/<cid>` can reach the
+          # guests without a password, the guests have no root password and
+          # no other keys. A symlink would point into the world-readable nix
+          # store and ssh would refuse it. See bringupTestKey above.
+          "d /root/.ssh 0700 root root -"
+          "C /root/.ssh/id_ed25519 0600 root root - ${bringupTestKey}"
+        ];
+
+        # The connector's crosvm connects when its device is created and, if the
+        # hub has not bound the socket yet, retries with bounded backoff for a
+        # few seconds before failing that VM. Ordering makes the common case
+        # right; "After" only means admin-vm's unit started, not that its crosvm
+        # reached bind(), so the retry budget covers the rest.
+        systemd.services."microvm@net-vm" = {
+          # After: the hub should have bound the socket before the connector
+          # tries it. This avoids a pointless crashloop at boot; it is not about
+          # correctness.
+          after = [ "microvm@admin-vm.service" ];
+          wants = [ "microvm@admin-vm.service" ];
+
+          # PartOf, not merely Wants: propagate the hub's stop/restart to the
+          # connector, which comes back through its own Restart=always with a
+          # fresh channel. This dates from a crosvm whose connector treated peer
+          # loss as terminal, which left the guest blocked in wait_channel
+          # indefinitely with no error. The current connector also reconnects by
+          # itself once its old channel is settled (the guest closed the fd and
+          # the peer detached).
+          partOf = [ "microvm@admin-vm.service" ];
+        };
+      };
+    };
 
   # Exercise the complete manager/CDI integration in an existing CI-built
   # image without making example workloads part of Ghaf. The manager-owned
@@ -273,12 +330,34 @@ let
         # admin-vm listens, net-vm connects. Exactly one listener per link.
         sysvms.netvm = {
           extraModules = [
-            {
-              ghaf.virtualization.microvm.xchan = {
-                enable = true;
-                role = "connector";
-              };
-            }
+            (
+              { hostConfig, ... }:
+              {
+                ghaf.virtualization.microvm.xchan = {
+                  enable = true;
+                  role = "connector";
+                  benchTools = true;
+                  # BRING-UP ONLY. Gives `ssh root@vsock/<cid>` from the host, so
+                  # measurements and poking around stop costing a reflash. Pairs
+                  # with the test key in authorizedKeys below.
+                  vsockLogin = true;
+                };
+                # BRING-UP ONLY, see bringupTestKey.
+                users.users.root.openssh.authorizedKeys.keys = [ bringupTestKeyPub ];
+                # netvm-base assigns no CID, which is why `microvm -s net-vm`
+                # reported no VSOCK. Take it from the same central allocation
+                # the other sysvms use rather than a literal.
+                # BRING-UP ONLY. cid alone is NOT enough: microvm.vsock.ssh is a
+                # separate option, and without it no sshd listens on vsock, so
+                # `microvm -s net-vm` gets a connection reset and the test key
+                # is unusable. Found the hard way, the key was installed for
+                # three builds before anyone tried to connect through it.
+                microvm.vsock = {
+                  inherit (hostConfig.networking.thisVm) cid;
+                  ssh.enable = true;
+                };
+              }
+            )
           ];
         };
         sysvms.adminvm = {
@@ -287,7 +366,16 @@ let
               ghaf.virtualization.microvm.xchan = {
                 enable = true;
                 role = "listener";
+                benchTools = true;
+                # BRING-UP ONLY. See the note on net-vm.
+                vsockLogin = true;
               };
+              # BRING-UP ONLY. See the note on net-vm: the cid comes from
+              # networking.thisVm, but the vsock sshd has to be asked for
+              # separately or the test key cannot be reached.
+              microvm.vsock.ssh.enable = true;
+              # BRING-UP ONLY, see bringupTestKey.
+              users.users.root.openssh.authorizedKeys.keys = [ bringupTestKeyPub ];
             }
           ];
         };
