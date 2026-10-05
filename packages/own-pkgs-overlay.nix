@@ -22,6 +22,7 @@
     ghaf-vms = final.callPackage ./pkgs-by-name/ghaf-vms/package.nix { };
     gpu-vm-partition-manager-sdk = inputs.gpu-partition-manager.lib.mkSdk { pkgs = final; };
     hardware-scan = final.callPackage ./pkgs-by-name/hardware-scan/package.nix { };
+    libxchan = final.callPackage ./pkgs-by-name/xchan/package.nix { };
     logseald = inputs.logseald.lib.mkPackage { pkgs = final; };
     make-checks = final.callPackage ./pkgs-by-name/make-checks/package.nix { };
     memsocket = final.callPackage ./pkgs-by-name/memsocket/package.nix { };
@@ -31,6 +32,7 @@
     user-provision = final.callPackage ./pkgs-by-name/user-provision/package.nix { };
     wait-for-unit = final.callPackage ./pkgs-by-name/wait-for-unit/package.nix { };
     windows-launcher = final.callPackage ./pkgs-by-name/windows-launcher/package.nix { };
+    xchan-module = final.callPackage ./pkgs-by-name/xchan/module.nix { };
   };
   # keep-sorted end
 }
